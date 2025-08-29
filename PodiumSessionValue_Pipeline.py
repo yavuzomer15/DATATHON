@@ -736,8 +736,6 @@ def main(args):
     rmse_oof_t = np.sqrt(mean_squared_error(y_raw, oof_t))
     print(f"Transformer OOF RMSE (real scale): {rmse_oof_t:.5f}")
 
-    # ağaç OOF hizalama (doğrudan oof kullan)
-    oof_tree_aligned_vals = pd.Series(oof_tree, index=train_sess.index).loc[tr_sessions].values
 
     # CatBoost on session features (if available)
     train_sess = sess_feats_tr.copy()
@@ -747,29 +745,27 @@ def main(args):
     oof_tree, pred_tree = catboost_branch(train_sess, test_sess, cfg)
 
     # Blending
-    if oof_tree is not None:
+    if (oof_tree is not None) and (pred_tree is not None):
         # Align oof_tree to same order as sessions
         # train_sess index is session_id; ensure same order
-        oof_tree_aligned = train_sess.loc[tr_sessions][cfg.target_col].copy()
-        # Above is target; but we need oof predictions from tree aligned
-        # We'll rebuild folds to get aligned oof; simpler approach: we trained catboost on the whole table
-        # in order, so its oof already aligns with train_sess order. Map session index to positions:
-        pos_map = pd.Series(range(len(train_sess)), index=train_sess.index)
-        oof_tree_aligned_vals = np.zeros(len(tr_sessions))
-        oof_tree_aligned_vals[:] = oof_tree[pos_map.loc[tr_sessions].values]
+        oof_tree_aligned_vals = pd.Series(oof_tree, index=train_sess.index).loc[tr_sessions].values
 
         # Blend oof for score check
         blend_w = cfg.blend_weight_transformer
         oof_blend = blend_w * oof_t + (1.0 - blend_w) * oof_tree_aligned_vals
-        rmse_blend = mean_squared_error(y_raw, oof_blend, squared=False)
+        rmse_blend = np.sqrt(mean_squared_error(y_raw, oof_blend))
         print(f"Blended OOF RMSE (w={blend_w:.2f}): {rmse_blend:.5f}")
 
         # Blend test preds
-        test_tree_aligned = pred_tree
+        test_tree_aligned = pd.Series(pred_tree, index=test_sess.index).loc[te_sessions].values
         # test_sess order is te_sessions order
-        test_pred = blend_w * (np.expm1(test_pred_transformer) if cfg.use_log1p else test_pred_transformer) + (1.0 - blend_w) * test_tree_aligned
+        test_pred = (
+        blend_w * (np.expm1(test_pred_transformer) if cfg.use_log1p else test_pred_transformer)
+        + (1.0 - blend_w) * test_tree_aligned
+        )
     else:
-        test_pred = (np.expm1(test_pred_transformer) if cfg.use_log1p else test_pred_transformer)
+        print("CatBoost kolu pas geçildi (kurulu değil ya da başarısız). Transformer tahminleri kullanılacak.")
+        test_pred = np.expm1(test_pred_transformer) if cfg.use_log1p else test_pred_transformer
 
     # Write submission
     sample = pd.read_csv('sample_submission.csv')
